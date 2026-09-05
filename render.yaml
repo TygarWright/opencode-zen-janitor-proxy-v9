@@ -1,0 +1,12 @@
+services:
+  - type: web
+    name: janitorai-multiproxy-v9
+    runtime: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: python server.py
+    healthCheckPath: /health
+    envVars:
+      - key: OPENCODE_KEY_1
+        sync: false
+      - key: BITDEER_KEY_1
+        sync: false
