@@ -24,7 +24,11 @@ def load():
     c = dict(DEFAULT)
     try: c.update(json.loads(CFG_FILE.read_text()))
     except Exception: pass
-    if not c.get("proxy_api_key"): c["proxy_api_key"] = "jk_" + secrets.token_urlsafe(27)
+    env_key = os.getenv("PROXY_API_KEY", "").strip()
+    if env_key:
+        c["proxy_api_key"] = env_key
+    elif not c.get("proxy_api_key"):
+        c["proxy_api_key"] = "jk_" + secrets.token_urlsafe(27)
     save(c); return c
 
 def save(c):
@@ -38,7 +42,6 @@ cfg = load()
 events = deque(maxlen=80)
 stats = {"requests_total":0,"requests_stream":0,"requests_buffered":0,"native_stream":0,"buffered_fallback":0,"upstream_errors":0,"provider_switches":0,"active_requests":0,"last_provider":"-","last_status":0,"last_duration_ms":0,"last_ttfb_ms":0}
 session: ClientSession | None = None
-
 
 def keys(p):
     prefix = "OPENCODE_KEY_" if p == "opencode" else "BITDEER_KEY_"
@@ -66,14 +69,14 @@ def model_for(name,p):
     if low.endswith("/deepseek-v4-pro"): return MODELS["deepseek-v4-pro"][p], "deepseek-v4-pro"
     return name, name
 
-def event(kind, **x):
-    events.appendleft({"time":time.strftime("%Y-%m-%dT%H:%M:%SZ",time.gmtime()),"event":kind,**x})
+def event(kind, **x): events.appendleft({"time":time.strftime("%Y-%m-%dT%H:%M:%SZ",time.gmtime()),"event":kind,**x})
 
 def authorized(req):
     a=req.headers.get("Authorization","")
     token=a[7:].strip() if a.lower().startswith("bearer ") else a.strip()
     token=token or req.headers.get("X-API-Key","").strip()
-    return bool(token and cfg.get("proxy_api_key") and secrets.compare_digest(token,cfg["proxy_api_key"]))
+    expected=os.getenv("PROXY_API_KEY","").strip() or cfg.get("proxy_api_key","")
+    return bool(token and expected and secrets.compare_digest(token,expected))
 
 def headers(p,key):
     h={"Authorization":"Bearer "+key,"Content-Type":"application/json","Accept":"text/event-stream"}
@@ -85,8 +88,7 @@ def err(status,msg): return web.json_response({"error":{"message":msg,"type":"pr
 async def upstream_stream(p,payload):
     assert session
     base=cfg["opencode_base"] if p=="opencode" else cfg["bitdeer_base"]
-    url=base.rstrip("/")+"/chat/completions"
-    last=(502,"upstream unavailable")
+    url=base.rstrip("/")+"/chat/completions"; last=(502,"upstream unavailable")
     for n,key in enumerate(keys(p),1):
         try:
             r=await session.post(url,headers=headers(p,key),json=payload)
@@ -129,11 +131,9 @@ async def chat(req):
     started=time.monotonic(); stats["requests_total"]+=1; stats["active_requests"]+=1
     try:
         for idx,p in enumerate(seq):
-            upstream_model,client_model=model_for(requested,p)
-            payload=dict(body); payload["model"]=upstream_model
+            upstream_model,client_model=model_for(requested,p); payload=dict(body); payload["model"]=upstream_model
             if stream:
-                payload["stream"]=True
-                r,slot,problem=await upstream_stream(p,payload)
+                payload["stream"]=True; r,slot,problem=await upstream_stream(p,payload)
                 if r is not None:
                     if idx: stats["provider_switches"]+=1
                     stats["requests_stream"]+=1; stats["native_stream"]+=1; stats["last_provider"]=p
@@ -151,8 +151,7 @@ async def chat(req):
                 full,status=await buffered(p,payload)
                 if full is not None:
                     if idx: stats["provider_switches"]+=1
-                    stats["requests_buffered"]+=1; stats["last_provider"]=p; stats["last_status"]=status
-                    full["model"]=client_model
+                    stats["requests_buffered"]+=1; stats["last_provider"]=p; stats["last_status"]=status; full["model"]=client_model
                     return web.json_response(full,headers={"X-Proxy-Provider":p})
                 if status not in RETRY: return err(status,"Upstream request failed")
         return err(502,"All configured providers/keys failed")
@@ -186,8 +185,7 @@ async def settings(req):
 
 async def test(req):
     if not authorized(req): return err(401,"Invalid proxy API key")
-    data=await req.json(); ps=[data.get("provider")] if data.get("provider") in ("opencode","bitdeer") else order()
-    out=[]
+    data=await req.json(); ps=[data.get("provider")] if data.get("provider") in ("opencode","bitdeer") else order(); out=[]
     for p in ps:
         if not configured(p): out.append({"provider":p,"ok":False,"message":"No key"}); continue
         t=time.monotonic(); payload={"model":model_for("deepseek-v4-flash",p)[0],"messages":[{"role":"user","content":"Reply exactly: PROVIDER_TEST_OK"}],"stream":False,"max_tokens":20}
