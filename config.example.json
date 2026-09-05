@@ -1,0 +1,11 @@
+{
+  "provider_mode": "auto",
+  "provider_order": ["opencode", "bitdeer"],
+  "opencode_base": "https://opencode.ai/zen/v1",
+  "opencode_model": "deepseek-v4-flash",
+  "opencode_user_agent": "OpenCode/1.2.31",
+  "bitdeer_base": "https://api-inference.bitdeer.ai/v1",
+  "bitdeer_model": "deepseek-ai/DeepSeek-V4-Flash",
+  "janitor_model": "deepseek-v4-flash",
+  "proxy_port": 8080
+}
